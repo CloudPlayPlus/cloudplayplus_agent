@@ -15,13 +15,18 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # CloudPlayPlus fork of mcp_dart (submodule at ./mcp_dart). Adds:
+  # CloudPlayPlus fork of mcp_dart. Adds on top of upstream 2.1.0:
   #   - configurable HttpServer.idleTimeout (default null; keeps long-lived
   #     SSE streams alive past Dart's 120s default)
-  #   - onstandalonesseopen / onstandalonesseclose transport hooks
-  #   - StreamableMcpServer onClientConnected / onClientDisconnected
+  #   - standalone SSE rewritten on top of detachSocket() for reliable
+  #     client-disconnect detection (HttpResponse.done doesn't fire on TCP
+  #     close), with chunked-transfer-encoding disabled so bytes reach the
+  #     client as valid SSE
+  #   - StreamableMcpServer.onClientConnected / onClientDisconnected
   mcp_dart:
-    path: mcp_dart
+    git:
+      url: https://github.com/CloudPlayPlus/mcp_dart.git
+      ref: a4e5da51578a6d5796323319a0bc96828584e02a
 
 dev_dependencies:
   flutter_test:
