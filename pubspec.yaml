@@ -15,7 +15,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  mcp_dart: ^2.1.0
+  # CloudPlayPlus fork of mcp_dart with two fixes the upstream 2.1.0 release
+  # lacks: configurable HttpServer.idleTimeout (default null, so long-lived
+  # SSE streams don't get culled at 120s) and a transport.onclose callback
+  # that fires when the standalone SSE GET disconnects.
+  mcp_dart:
+    git:
+      url: https://github.com/CloudPlayPlus/mcp_dart.git
+      ref: 1349e5d23287781139efc10c7e1bf50ca445f4db
 
 dev_dependencies:
   flutter_test:

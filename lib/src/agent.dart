@@ -45,7 +45,6 @@ class CloudplayAgent {
     this.path = '/mcp',
     this.serverName = 'cloudplayplus',
     this.serverVersion = '0.0.1',
-    this.heartbeatInterval = const Duration(seconds: 45),
     String? instructions,
     this.onFetchMessages,
     this.onDownloadAttachment,
@@ -71,18 +70,9 @@ class CloudplayAgent {
   /// with a note that downloads aren't configured.
   final DownloadAttachmentHandler? onDownloadAttachment;
 
-  /// How often to push a silent keep-alive notification to each connected
-  /// Claude Code session. `mcp_dart`'s Streamable HTTP transport binds its
-  /// `HttpServer` with the Dart default `idleTimeout` (120 seconds), which
-  /// kills an SSE stream that hasn't written any bytes in that window. The
-  /// heartbeat writes a harmless notification so the TCP stays live across
-  /// long quiet periods. Set to [Duration.zero] to disable.
-  final Duration heartbeatInterval;
-
   final _events = StreamController<AgentEvent>.broadcast();
   final Map<String, McpServer> _sessions = {};
   StreamableMcpServer? _httpServer;
-  Timer? _heartbeat;
 
   /// CC-initiated events the host should route to the user.
   Stream<AgentEvent> get events => _events.stream;
@@ -104,30 +94,13 @@ class CloudplayAgent {
     );
     await http.start();
     _httpServer = http;
-
-    if (heartbeatInterval > Duration.zero) {
-      _heartbeat = Timer.periodic(heartbeatInterval, (_) => _sendHeartbeat());
-    }
   }
 
   Future<void> stop() async {
-    _heartbeat?.cancel();
-    _heartbeat = null;
     await _httpServer?.stop();
     _httpServer = null;
     _sessions.clear();
     await _events.close();
-  }
-
-  /// Writes a no-op notification to every connected session. The goal is a
-  /// TCP write — keeping the SSE stream out of `HttpServer.idleTimeout`'s
-  /// sights. Method name is non-standard so Claude Code ignores it.
-  Future<void> _sendHeartbeat() async {
-    if (_sessions.isEmpty) return;
-    await _broadcast(JsonRpcNotification(
-      method: 'notifications/cloudplayplus/heartbeat',
-      params: const {},
-    ));
   }
 
   McpServer _buildServer(String sessionId) {
@@ -144,11 +117,8 @@ class CloudplayAgent {
 
     _sessions[sessionId] = srv;
 
-    // Fires on proper MCP DELETE / server-side shutdown. Note: mcp_dart's
-    // StreamableHTTP transport does NOT invoke this on raw TCP disconnect
-    // of a GET SSE stream — stream teardown and session teardown are
-    // distinct by design. For idle / stuck sessions we rely on the lazy
-    // cleanup in [_broadcast] (dead-session entries pruned on next send).
+    // Fires on MCP DELETE, server-side shutdown, and (with our mcp_dart
+    // fork) on raw TCP disconnect of the standalone SSE GET stream.
     srv.server.onclose = () {
       _sessions.remove(sessionId);
     };
