@@ -71,14 +71,29 @@ class CloudplayAgent {
   final DownloadAttachmentHandler? onDownloadAttachment;
 
   final _events = StreamController<AgentEvent>.broadcast();
+
+  /// All sessions whose POST `initialize` handshake has been accepted.
+  /// Used purely for routing — `_broadcast` needs to find the transports
+  /// to deliver notifications. A session can exist here without a client
+  /// currently listening (see [_listeners]).
   final Map<String, McpServer> _sessions = {};
+
+  /// Sessions whose standalone GET SSE stream is currently open. This is
+  /// the right set to use for "is anyone receiving my broadcasts" checks
+  /// and for the UI connection count. Driven by the mcp_dart fork's
+  /// `onClientConnected` / `onClientDisconnected` callbacks.
+  final Set<String> _listeners = {};
+
   StreamableMcpServer? _httpServer;
 
   /// CC-initiated events the host should route to the user.
   Stream<AgentEvent> get events => _events.stream;
 
-  /// Number of Claude Code sessions currently connected.
-  int get connectedSessions => _sessions.length;
+  /// Number of Claude Code sessions currently listening for pushed
+  /// events (i.e. with an active standalone SSE GET stream). Sessions
+  /// that only completed a POST initialize but never opened the stream
+  /// are NOT counted.
+  int get connectedSessions => _listeners.length;
 
   /// Starts the local MCP HTTP server. Safe to await before CC is started.
   Future<void> start() async {
@@ -91,6 +106,8 @@ class CloudplayAgent {
       host: host,
       port: port,
       path: path,
+      onClientConnected: _listeners.add,
+      onClientDisconnected: _listeners.remove,
     );
     await http.start();
     _httpServer = http;
@@ -100,6 +117,7 @@ class CloudplayAgent {
     await _httpServer?.stop();
     _httpServer = null;
     _sessions.clear();
+    _listeners.clear();
     await _events.close();
   }
 
