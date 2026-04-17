@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 
 import 'package:mcp_dart/mcp_dart.dart';
@@ -8,36 +7,48 @@ import 'capabilities.dart';
 import 'events.dart';
 import 'instructions.dart';
 
+/// Host callback: resolve the last [limit] messages on [chatId] for CC.
+///
+/// Returned list must be oldest-first. May throw — the thrown message is
+/// forwarded to CC as a tool error.
+typedef FetchMessagesHandler = Future<List<HistoryMessage>> Function(
+  String chatId,
+  int limit,
+);
+
+/// Host callback: download attachments for a specific message and return
+/// absolute local paths CC can `Read`.
+///
+/// Returning [AttachmentDownload.paths] empty is valid (= message had no
+/// attachments). May throw — the thrown message is forwarded to CC.
+typedef DownloadAttachmentHandler = Future<AttachmentDownload> Function(
+  String chatId,
+  String messageId,
+);
+
 /// MCP channel bridge for Claude Code.
 ///
-/// Starts a local Streamable HTTP MCP server. Claude Code connects to it as
-/// a regular MCP client, sees the `wait_for_message` + `reply` tools, and
-/// drives a long-poll loop driven by the server instructions:
+/// Starts a local Streamable HTTP MCP server. Claude Code connects as a
+/// regular MCP client, sees the `reply` / `react` / `edit_message` /
+/// `fetch_messages` / `download_attachment` tools plus the
+/// `experimental.claude/channel` capability, and drives the channel from
+/// there.
 ///
-///   1. CC calls `wait_for_message` (blocks up to 25s)
-///   2. When a user message arrives, [sendUserMessage] pushes it to the
-///      inbox and the tool call returns with the message body
-///   3. CC processes the message and calls `reply` to respond
-///   4. The `reply` tool emits an [AssistantReply] event the host can route
-///   5. CC calls `wait_for_message` again — loop repeats
-///
-/// Why pull instead of push? Testing showed that CC builds without the
-/// `--channels` flag do NOT subscribe to `notifications/claude/channel`
-/// events, so server-initiated pushes are dropped. Long-poll works on any
-/// MCP-speaking CC build. Notifications are still broadcast on a best-effort
-/// basis for channel-aware CC versions that might be listening.
+/// Delivery is push-only via `notifications/claude/channel`. CC builds
+/// without native `--channels` support won't receive inbound messages —
+/// run `claude --channels plugin:<your-plugin>` or
+/// `--dangerously-load-development-channels` during development.
 class CloudplayAgent {
   CloudplayAgent({
     this.host = '127.0.0.1',
-    this.port = 7823,
+    this.port = 48989,
     this.path = '/mcp',
     this.serverName = 'cloudplayplus',
     this.serverVersion = '0.0.1',
-    this.pollTimeout = const Duration(seconds: 25),
-    this.exposeLongPollTool = true,
     String? instructions,
-  }) : instructions = instructions ??
-            (exposeLongPollTool ? kPollingInstructions : kPushInstructions);
+    this.onFetchMessages,
+    this.onDownloadAttachment,
+  }) : instructions = instructions ?? kChannelInstructions;
 
   /// Bind address. Defaults to loopback — do NOT expose this to LAN/WAN
   /// without also wiring an authenticator. The MCP server has no auth of
@@ -49,22 +60,17 @@ class CloudplayAgent {
   final String serverVersion;
   final String instructions;
 
-  /// How long each `wait_for_message` call blocks before returning an idle
-  /// signal. Short enough that MCP transports don't time out; long enough
-  /// that CC isn't spamming polls.
-  final Duration pollTimeout;
+  /// Host-supplied history provider. Called when CC invokes
+  /// `fetch_messages`. If null, the tool still exists but returns an
+  /// empty list.
+  final FetchMessagesHandler? onFetchMessages;
 
-  /// Whether to expose the `wait_for_message` long-poll tool to CC.
-  ///
-  /// Set to `false` to force push-only delivery (via
-  /// `notifications/claude/channel`). Useful for verifying whether CC's
-  /// native channel listener is active: with the long-poll tool removed, CC
-  /// has no alternative path to receive messages, so any successful delivery
-  /// proves the push path works.
-  final bool exposeLongPollTool;
+  /// Host-supplied attachment provider. Called when CC invokes
+  /// `download_attachment`. If null, the tool returns an empty path list
+  /// with a note that downloads aren't configured.
+  final DownloadAttachmentHandler? onDownloadAttachment;
 
   final _events = StreamController<AgentEvent>.broadcast();
-  final _inbox = _Inbox();
   final Map<String, McpServer> _sessions = {};
   StreamableMcpServer? _httpServer;
 
@@ -91,7 +97,6 @@ class CloudplayAgent {
   }
 
   Future<void> stop() async {
-    _inbox.clear();
     await _httpServer?.stop();
     _httpServer = null;
     _sessions.clear();
@@ -112,46 +117,26 @@ class CloudplayAgent {
 
     _sessions[sessionId] = srv;
 
-    // Tool: wait_for_message — the long-poll. CC sits here until we have
-    // something to say, or until the timeout fires (then it re-calls).
-    // Skipped when push-only mode is requested.
-    if (exposeLongPollTool) {
-      srv.registerTool(
-        'wait_for_message',
-        description:
-            'Block up to ~25 seconds waiting for the next user message on '
-            'the CloudPlayPlus channel.\n\n'
-            'Returns either:\n'
-            '  • a message object {"chat_id":"...", "text":"...", '
-            '"message_id":"...", "user":"...", "ts":"..."}\n'
-            '  • an idle signal {"status":"idle"} when no message arrived '
-            'within the poll window — call again immediately to keep listening.\n\n'
-            'Call this in a loop: wait → process → reply → wait. See server '
-            'instructions for the full protocol.',
-        inputSchema: JsonSchema.object(properties: const {}),
-        callback: (args, extra) async {
-          final msg = await _inbox.pull(timeout: pollTimeout);
-          final body = msg ?? const {'status': 'idle'};
-          return CallToolResult.fromContent(
-            [TextContent(text: jsonEncode(body))],
-          );
-        },
-      );
-    }
+    // Fires on proper MCP DELETE / server-side shutdown. Note: mcp_dart's
+    // StreamableHTTP transport does NOT invoke this on raw TCP disconnect
+    // of a GET SSE stream — stream teardown and session teardown are
+    // distinct by design. For idle / stuck sessions we rely on the lazy
+    // cleanup in [_broadcast] (dead-session entries pruned on next send).
+    srv.server.onclose = () {
+      _sessions.remove(sessionId);
+    };
 
-    // Tool: reply — CC calls this to send a chat message back to the user.
     srv.registerTool(
       'reply',
       description:
           'Reply on the CloudPlayPlus channel. Pass chat_id from the '
-          'incoming message you received via wait_for_message. Optionally '
-          'pass reply_to (message_id) for threading, and files (absolute '
-          'paths) to attach images or other files.',
+          'incoming <channel> tag. Optionally pass reply_to (message_id) '
+          'for threading, and files (absolute paths) to attach images or '
+          'other files.',
       inputSchema: JsonSchema.object(
         properties: {
           'chat_id': JsonSchema.string(
-            description:
-                'chat_id echoed from the message returned by wait_for_message',
+            description: 'chat_id echoed from the inbound message.',
           ),
           'text': JsonSchema.string(
             description: 'Reply body. Markdown is fine.',
@@ -192,6 +177,175 @@ class CloudplayAgent {
       },
     );
 
+    srv.registerTool(
+      'react',
+      description:
+          'Attach an emoji reaction to an existing message. Unicode '
+          'emoji work directly. Use this for quick acknowledgements '
+          '(👀 = "seen, working on it", ✅ = "done") instead of sending '
+          'a whole new reply.',
+      inputSchema: JsonSchema.object(
+        properties: {
+          'chat_id': JsonSchema.string(),
+          'message_id': JsonSchema.string(
+            description:
+                'message_id of the message to react to. Usually the '
+                'incoming user message id.',
+          ),
+          'emoji': JsonSchema.string(
+            description: 'Unicode emoji, e.g. "👍".',
+          ),
+        },
+        required: ['chat_id', 'message_id', 'emoji'],
+      ),
+      callback: (args, extra) async {
+        _events.add(ReactionRequested(
+          chatId: args['chat_id'] as String,
+          messageId: args['message_id'] as String,
+          emoji: args['emoji'] as String,
+        ));
+        return CallToolResult.fromContent(
+          [TextContent(text: 'reacted')],
+        );
+      },
+    );
+
+    srv.registerTool(
+      'edit_message',
+      description:
+          'Edit a message previously sent via `reply`. Useful for interim '
+          'progress updates. Edits usually do not re-notify the user, so '
+          'send a fresh `reply` when a long task completes.',
+      inputSchema: JsonSchema.object(
+        properties: {
+          'chat_id': JsonSchema.string(),
+          'message_id': JsonSchema.string(
+            description: 'message_id returned to you from an earlier reply.',
+          ),
+          'text': JsonSchema.string(
+            description: 'Full replacement body (not a diff).',
+          ),
+        },
+        required: ['chat_id', 'message_id', 'text'],
+      ),
+      callback: (args, extra) async {
+        _events.add(MessageEditRequested(
+          chatId: args['chat_id'] as String,
+          messageId: args['message_id'] as String,
+          text: args['text'] as String,
+        ));
+        return CallToolResult.fromContent(
+          [TextContent(text: 'edited')],
+        );
+      },
+    );
+
+    srv.registerTool(
+      'fetch_messages',
+      description:
+          'Fetch recent messages from a chat. Returns oldest-first with '
+          'message_ids so you can `reply_to` or `edit_message` them.',
+      inputSchema: JsonSchema.object(
+        properties: {
+          'chat_id': JsonSchema.string(
+            description:
+                'chat_id to look up. Use the same value you see on '
+                'inbound <channel> tags.',
+          ),
+          'limit': JsonSchema.integer(
+            description: 'Max messages (default 20, capped at 100).',
+          ),
+        },
+        required: ['chat_id'],
+      ),
+      callback: (args, extra) async {
+        final chatId = args['chat_id'] as String;
+        final rawLimit = args['limit'];
+        final limit = switch (rawLimit) {
+          int i => i,
+          num n => n.toInt(),
+          _ => 20,
+        }
+            .clamp(1, 100);
+
+        final provider = onFetchMessages;
+        if (provider == null) {
+          return CallToolResult.fromContent([
+            TextContent(
+              text: jsonEncode({
+                'messages': <Map<String, Object?>>[],
+                'note': 'history is not configured on this host',
+              }),
+            ),
+          ]);
+        }
+
+        try {
+          final msgs = await provider(chatId, limit);
+          return CallToolResult.fromContent([
+            TextContent(
+              text: jsonEncode({
+                'messages': msgs.map((m) => m.toJson()).toList(),
+              }),
+            ),
+          ]);
+        } catch (e) {
+          return CallToolResult(
+            content: [TextContent(text: 'fetch_messages failed: $e')],
+            isError: true,
+          );
+        }
+      },
+    );
+
+    srv.registerTool(
+      'download_attachment',
+      description:
+          'Download the attachments of a specific message to local files '
+          'and return their absolute paths. Call this before `Read` on '
+          'any attachment you need to inspect.',
+      inputSchema: JsonSchema.object(
+        properties: {
+          'chat_id': JsonSchema.string(),
+          'message_id': JsonSchema.string(),
+        },
+        required: ['chat_id', 'message_id'],
+      ),
+      callback: (args, extra) async {
+        final chatId = args['chat_id'] as String;
+        final messageId = args['message_id'] as String;
+
+        final provider = onDownloadAttachment;
+        if (provider == null) {
+          return CallToolResult.fromContent([
+            TextContent(
+              text: jsonEncode({
+                'paths': <String>[],
+                'note': 'attachment download is not configured on this host',
+              }),
+            ),
+          ]);
+        }
+
+        try {
+          final result = await provider(chatId, messageId);
+          return CallToolResult.fromContent([
+            TextContent(
+              text: jsonEncode({
+                'paths': result.paths,
+                if (result.note != null) 'note': result.note,
+              }),
+            ),
+          ]);
+        } catch (e) {
+          return CallToolResult(
+            content: [TextContent(text: 'download_attachment failed: $e')],
+            isError: true,
+          );
+        }
+      },
+    );
+
     // Notification handler: CC → us when it wants to ask for permission.
     // Only fires on CC builds that expose the permission-relay capability.
     srv.server.setNotificationHandler<JsonRpcNotification>(
@@ -218,12 +372,11 @@ class CloudplayAgent {
     return srv;
   }
 
-  /// Queue a user message for Claude Code to pick up on its next
-  /// `wait_for_message` call. Also broadcasts a channel notification for
-  /// CC builds that auto-subscribe (best-effort, no harm if dropped).
+  /// Push a user message into Claude Code as a channel notification.
   ///
-  /// [chatId] is an opaque routing key; CC echoes it back in [AssistantReply]
-  /// so the host can thread replies to the right conversation.
+  /// [chatId] is an opaque routing key; CC echoes it back in
+  /// [AssistantReply] / [ReactionRequested] / [MessageEditRequested] so
+  /// the host can thread replies to the right conversation.
   Future<void> sendUserMessage({
     required String chatId,
     required String text,
@@ -233,9 +386,8 @@ class CloudplayAgent {
     DateTime? ts,
     Map<String, String>? extraMeta,
   }) async {
-    final body = <String, dynamic>{
+    final meta = <String, dynamic>{
       'chat_id': chatId,
-      'text': text,
       'message_id': ?messageId,
       'user': ?user,
       'user_id': ?userId,
@@ -243,12 +395,6 @@ class CloudplayAgent {
       if (extraMeta != null) ...extraMeta,
     };
 
-    // Primary delivery path: unblock whoever is sitting in wait_for_message.
-    _inbox.push(body);
-
-    // Secondary: push a channel notification. CC builds with native channel
-    // support will pick it up; others ignore it. We don't rely on this.
-    final meta = Map<String, dynamic>.of(body)..remove('text');
     await _broadcast(JsonRpcNotification(
       method: ClaudeChannelMethods.inboundMessage,
       params: {'content': text, 'meta': meta},
@@ -286,45 +432,5 @@ class CloudplayAgent {
     for (final id in dead) {
       _sessions.remove(id);
     }
-  }
-}
-
-/// Single-slot long-poll inbox. Messages push in, a single consumer pulls.
-/// If multiple CC sessions ever race on `wait_for_message`, the most recent
-/// caller wins the next message — which is fine for Flutter's typical
-/// one-CC scenario. A richer design would queue waiters.
-class _Inbox {
-  final Queue<Map<String, dynamic>> _pending = Queue();
-  Completer<Map<String, dynamic>?>? _waiter;
-
-  void push(Map<String, dynamic> msg) {
-    final w = _waiter;
-    if (w != null && !w.isCompleted) {
-      _waiter = null;
-      w.complete(msg);
-    } else {
-      _pending.add(msg);
-    }
-  }
-
-  /// Returns the next message, or null if [timeout] elapses first.
-  Future<Map<String, dynamic>?> pull({
-    required Duration timeout,
-  }) async {
-    if (_pending.isNotEmpty) return _pending.removeFirst();
-    final completer = _waiter = Completer<Map<String, dynamic>?>();
-    try {
-      return await completer.future.timeout(timeout);
-    } on TimeoutException {
-      if (identical(_waiter, completer)) _waiter = null;
-      return null;
-    }
-  }
-
-  void clear() {
-    _pending.clear();
-    final w = _waiter;
-    _waiter = null;
-    if (w != null && !w.isCompleted) w.complete(null);
   }
 }

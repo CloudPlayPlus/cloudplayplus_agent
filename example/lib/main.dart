@@ -18,15 +18,8 @@ import 'package:cloudplayplus_agent/cloudplayplus_agent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-const _port = 7823;
+const _port = 48989;
 const _chatId = 'flutter-demo';
-
-/// Set to `true` to disable the `wait_for_message` long-poll tool. CC will
-/// then only be able to receive messages via `notifications/claude/channel`
-/// (the experimental capability). Use this to verify whether CC's native
-/// channel listener actually fires — if messages still arrive, push works.
-/// If they don't, long-poll is the only path.
-const _kPushOnly = true;
 
 void main() {
   runApp(const DemoApp());
@@ -60,19 +53,24 @@ class DemoApp extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 
 sealed class ChatItem {
-  ChatItem() : ts = DateTime.now();
+  ChatItem()
+      : ts = DateTime.now(),
+        id = DateTime.now().microsecondsSinceEpoch.toString();
   final DateTime ts;
+  final String id;
 }
 
 class UserBubble extends ChatItem {
   UserBubble(this.text);
-  final String text;
+  String text;
+  final List<String> reactions = [];
 }
 
 class AssistantBubble extends ChatItem {
   AssistantBubble({required this.text, this.files = const []});
-  final String text;
-  final List<String> files;
+  String text;
+  List<String> files;
+  final List<String> reactions = [];
 }
 
 class PermissionCard extends ChatItem {
@@ -129,7 +127,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _bootstrap() async {
     _agent = CloudplayAgent(
       port: _port,
-      exposeLongPollTool: !_kPushOnly,
+      onFetchMessages: _fetchHistory,
     );
     try {
       await _agent.start();
@@ -163,6 +161,30 @@ class _HomePageState extends State<HomePage> {
       switch (event) {
         case AssistantReply e:
           _items.add(AssistantBubble(text: e.text, files: e.files));
+        case MessageEditRequested e:
+          final target = _items.firstWhere(
+            (it) => it.id == e.messageId,
+            orElse: () => SystemLine(
+              'edit_message: id ${e.messageId} not found',
+            ),
+          );
+          if (target is AssistantBubble) {
+            target.text = e.text;
+          } else if (target is UserBubble) {
+            target.text = e.text;
+          }
+        case ReactionRequested e:
+          final target = _items.firstWhere(
+            (it) => it.id == e.messageId,
+            orElse: () => SystemLine(
+              'react: id ${e.messageId} not found',
+            ),
+          );
+          if (target is AssistantBubble) {
+            target.reactions.add(e.emoji);
+          } else if (target is UserBubble) {
+            target.reactions.add(e.emoji);
+          }
         case PermissionRequested e:
           _items.add(PermissionCard(
             requestId: e.requestId,
@@ -175,13 +197,41 @@ class _HomePageState extends State<HomePage> {
     _scrollToEnd();
   }
 
+  Future<List<HistoryMessage>> _fetchHistory(String chatId, int limit) async {
+    if (chatId != _chatId) return const [];
+    final relevant = _items
+        .where((it) => it is UserBubble || it is AssistantBubble)
+        .toList();
+    final tail = relevant.length > limit
+        ? relevant.sublist(relevant.length - limit)
+        : relevant;
+    return [
+      for (final it in tail)
+        if (it is UserBubble)
+          HistoryMessage(
+            messageId: it.id,
+            text: it.text,
+            author: 'flutter-demo',
+            ts: it.ts,
+          )
+        else if (it is AssistantBubble)
+          HistoryMessage(
+            messageId: it.id,
+            text: it.text,
+            author: 'claude',
+            ts: it.ts,
+          ),
+    ];
+  }
+
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty) return;
     _input.clear();
     _inputFocus.requestFocus();
 
-    setState(() => _items.add(UserBubble(text)));
+    final bubble = UserBubble(text);
+    setState(() => _items.add(bubble));
     _scrollToEnd();
 
     if (_agent.connectedSessions == 0) {
@@ -195,6 +245,7 @@ class _HomePageState extends State<HomePage> {
       await _agent.sendUserMessage(
         chatId: _chatId,
         text: text,
+        messageId: bubble.id,
         user: 'flutter-demo',
       );
     } catch (e) {
@@ -303,9 +354,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _renderItem(ChatItem item) => switch (item) {
-        UserBubble u => _Bubble(text: u.text, isUser: true),
-        AssistantBubble a =>
-          _Bubble(text: a.text, isUser: false, files: a.files),
+        UserBubble u =>
+          _Bubble(text: u.text, isUser: true, reactions: u.reactions),
+        AssistantBubble a => _Bubble(
+            text: a.text,
+            isUser: false,
+            files: a.files,
+            reactions: a.reactions,
+          ),
         PermissionCard c => _PermissionCardView(
             card: c,
             onAllow: () => _resolvePermission(c, true),
@@ -397,10 +453,12 @@ class _Bubble extends StatelessWidget {
     required this.text,
     required this.isUser,
     this.files = const [],
+    this.reactions = const [],
   });
   final String text;
   final bool isUser;
   final List<String> files;
+  final List<String> reactions;
 
   @override
   Widget build(BuildContext context) {
@@ -453,6 +511,26 @@ class _Bubble extends StatelessWidget {
                               color: fg.withValues(alpha: 0.8))),
                     ],
                   )),
+            ],
+            if (reactions.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                children: [
+                  for (final emoji in reactions)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: fg.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(emoji,
+                          style: const TextStyle(fontSize: 14)),
+                    ),
+                ],
+              ),
             ],
           ],
         ),

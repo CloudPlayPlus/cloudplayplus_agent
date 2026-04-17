@@ -5,8 +5,8 @@ description: >-
   apps (e.g. CloudPlayPlus) route user messages, replies, and permission
   prompts between Claude Code and any transport layer.
 version: 0.0.1
-repository: https://github.com/zhuhaichao518/cloudplayplus_agent
-issue_tracker: https://github.com/zhuhaichao518/cloudplayplus_agent/issues
+repository: https://github.com/CloudPlayPlus/cloudplayplus_agent
+issue_tracker: https://github.com/CloudPlayPlus/cloudplayplus_agent/issues
 
 environment:
   sdk: ^3.10.0

@@ -22,11 +22,20 @@ import 'dart:io';
 
 import 'package:cloudplayplus_agent/cloudplayplus_agent.dart';
 
-const _port = 7823;
+const _port = 48989;
 const _chatId = 'demo-local';
 
 Future<void> main() async {
-  final agent = CloudplayAgent(port: _port);
+  final history = <HistoryMessage>[];
+  final agent = CloudplayAgent(
+    port: _port,
+    onFetchMessages: (chatId, limit) async {
+      if (chatId != _chatId) return const [];
+      final tail =
+          history.length > limit ? history.sublist(history.length - limit) : history;
+      return List.of(tail);
+    },
+  );
   await agent.start();
 
   _printBanner();
@@ -35,10 +44,32 @@ Future<void> main() async {
   final eventsSub = agent.events.listen((event) {
     switch (event) {
       case AssistantReply e:
-        stdout.writeln('\n[CC →] ${e.text}');
+        final id = DateTime.now().microsecondsSinceEpoch.toString();
+        history.add(HistoryMessage(
+          messageId: id,
+          text: e.text,
+          author: 'claude',
+          ts: DateTime.now().toUtc(),
+        ));
+        stdout.writeln('\n[CC → $id] ${e.text}');
         if (e.files.isNotEmpty) {
           stdout.writeln('       (files: ${e.files.join(', ')})');
         }
+        stdout.write('you> ');
+      case MessageEditRequested e:
+        final idx = history.indexWhere((m) => m.messageId == e.messageId);
+        if (idx >= 0) {
+          history[idx] = HistoryMessage(
+            messageId: e.messageId,
+            text: e.text,
+            author: history[idx].author,
+            ts: history[idx].ts,
+          );
+        }
+        stdout.writeln('\n[CC ✎ ${e.messageId}] ${e.text}');
+        stdout.write('you> ');
+      case ReactionRequested e:
+        stdout.writeln('\n[CC ${e.emoji} → ${e.messageId}]');
         stdout.write('you> ');
       case PermissionRequested e:
         stdout.writeln('\n[CC 🔐] ${e.toolName} wants to run:');
@@ -107,9 +138,17 @@ Future<void> main() async {
       return;
     }
 
+    final msgId = DateTime.now().microsecondsSinceEpoch.toString();
+    history.add(HistoryMessage(
+      messageId: msgId,
+      text: trimmed,
+      author: 'local-cli',
+      ts: DateTime.now().toUtc(),
+    ));
     await agent.sendUserMessage(
       chatId: _chatId,
       text: trimmed,
+      messageId: msgId,
       user: 'local-cli',
     );
     stdout.write('you> ');

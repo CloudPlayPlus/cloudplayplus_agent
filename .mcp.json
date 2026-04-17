@@ -2,7 +2,7 @@
   "mcpServers": {
     "cloudplayplus": {
       "type": "http",
-      "url": "http://127.0.0.1:7823/mcp"
+      "url": "http://127.0.0.1:48989/mcp"
     }
   }
 }

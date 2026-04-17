@@ -17,7 +17,7 @@ WebSocket, IM server…) is the caller's problem. This package only speaks MCP.
 ```dart
 import 'package:cloudplayplus_agent/cloudplayplus_agent.dart';
 
-final agent = CloudplayAgent(port: 7823);
+final agent = CloudplayAgent(port: 48989);
 await agent.start();
 
 // Route CC-produced events to your transport.
@@ -25,6 +25,10 @@ agent.events.listen((event) {
   switch (event) {
     case AssistantReply e:
       myTransport.deliverText(e.chatId, e.text);
+    case MessageEditRequested e:
+      myTransport.editText(e.chatId, e.messageId, e.text);
+    case ReactionRequested e:
+      myTransport.addReaction(e.chatId, e.messageId, e.emoji);
     case PermissionRequested e:
       myTransport.showPermissionCard(e);
   }
@@ -48,7 +52,7 @@ On the Claude Code side, drop a `.mcp.json` next to where you run `claude`:
   "mcpServers": {
     "cloudplayplus": {
       "type": "http",
-      "url": "http://127.0.0.1:7823/mcp"
+      "url": "http://127.0.0.1:48989/mcp"
     }
   }
 }
@@ -74,7 +78,7 @@ In a second terminal, drop this into a scratch project's `.mcp.json` (the
 app's copy button will give it to you):
 
 ```json
-{"mcpServers":{"cloudplayplus":{"type":"http","url":"http://127.0.0.1:7823/mcp"}}}
+{"mcpServers":{"cloudplayplus":{"type":"http","url":"http://127.0.0.1:48989/mcp"}}}
 ```
 
 Then run `claude` in that project and start talking.
@@ -94,6 +98,10 @@ Same protocol, same endpoint, no UI.
 | Direction | Method / Tool | Purpose |
 |---|---|---|
 | CC → server | tool `reply` | CC sends a chat reply. `chat_id` + `text` required; `reply_to` and `files` optional. Emitted as [`AssistantReply`](lib/src/events.dart). |
+| CC → server | tool `edit_message` | CC edits a message it previously sent. Emitted as [`MessageEditRequested`](lib/src/events.dart). |
+| CC → server | tool `react` | CC attaches an emoji reaction to a message. Emitted as [`ReactionRequested`](lib/src/events.dart). |
+| CC → server | tool `fetch_messages` | CC asks the host for recent chat history. Resolved by the `onFetchMessages` callback. |
+| CC → server | tool `download_attachment` | CC asks the host to materialize message attachments as local files. Resolved by the `onDownloadAttachment` callback. |
 | CC → server | notification `notifications/claude/channel/permission_request` | CC wants the user to allow/deny a tool call. Emitted as [`PermissionRequested`](lib/src/events.dart). |
 | server → CC | notification `notifications/claude/channel` | A user message arrived. Call [`CloudplayAgent.sendUserMessage`]. |
 | server → CC | notification `notifications/claude/channel/permission` | Deliver the user's allow/deny decision. Call [`CloudplayAgent.replyPermission`]. |
@@ -101,6 +109,12 @@ Same protocol, same endpoint, no UI.
 These experimental capabilities are Claude Code-specific. They are not part
 of the MCP standard — the canonical reference implementation lives in
 `~/.claude/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts`.
+
+Inbound user messages are delivered purely via
+`notifications/claude/channel` (push). There is no fallback long-poll tool,
+so Claude Code must be started with `--channels plugin:<name>` (or
+`--dangerously-load-development-channels` during development) for delivery
+to work.
 
 ## Security note
 
