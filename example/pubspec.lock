@@ -141,11 +141,9 @@ packages:
   mcp_dart:
     dependency: transitive
     description:
-      path: "."
-      ref: a1f48e2c06cabf85ab821459269a92432ae63b3c
-      resolved-ref: a1f48e2c06cabf85ab821459269a92432ae63b3c
-      url: "https://github.com/CloudPlayPlus/mcp_dart.git"
-    source: git
+      path: "../mcp_dart"
+      relative: true
+    source: path
     version: "2.1.0"
   meta:
     dependency: transitive
