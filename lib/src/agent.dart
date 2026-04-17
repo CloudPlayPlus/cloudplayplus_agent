@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show stderr;
 
 import 'package:mcp_dart/mcp_dart.dart';
 
@@ -107,16 +106,8 @@ class CloudplayAgent {
       host: host,
       port: port,
       path: path,
-      onClientConnected: (sid) {
-        _listeners.add(sid);
-        stderr.writeln('[cloudplayplus] LISTENER+ $sid '
-            '(listeners=${_listeners.length}, sessions=${_sessions.length})');
-      },
-      onClientDisconnected: (sid) {
-        _listeners.remove(sid);
-        stderr.writeln('[cloudplayplus] LISTENER- $sid '
-            '(listeners=${_listeners.length}, sessions=${_sessions.length})');
-      },
+      onClientConnected: _listeners.add,
+      onClientDisconnected: _listeners.remove,
     );
     await http.start();
     _httpServer = http;
@@ -143,15 +134,12 @@ class CloudplayAgent {
     );
 
     _sessions[sessionId] = srv;
-    stderr.writeln('[cloudplayplus] SESSION+ $sessionId '
-        '(sessions=${_sessions.length}, listeners=${_listeners.length})');
 
-    // Fires on MCP DELETE, server-side shutdown, and (with our mcp_dart
-    // fork) on raw TCP disconnect of the standalone SSE GET stream.
+    // Fires on MCP DELETE and server-side shutdown. (TCP disconnect of the
+    // standalone SSE GET is tracked independently via [_listeners] from
+    // the mcp_dart fork's onClientDisconnected callback.)
     srv.server.onclose = () {
-      final existed = _sessions.remove(sessionId) != null;
-      stderr.writeln('[cloudplayplus] SESSION- $sessionId '
-          '(existed=$existed, sessions=${_sessions.length}, listeners=${_listeners.length})');
+      _sessions.remove(sessionId);
     };
 
     srv.registerTool(
