@@ -13,6 +13,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:cloudplayplus_agent/cloudplayplus_agent.dart';
 import 'package:flutter/material.dart';
@@ -499,18 +500,7 @@ class _Bubble extends StatelessWidget {
             SelectableText(text, style: TextStyle(color: fg, height: 1.35)),
             if (files.isNotEmpty) ...[
               const SizedBox(height: 6),
-              ...files.map((f) => Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.attach_file,
-                          size: 14, color: fg.withValues(alpha: 0.7)),
-                      const SizedBox(width: 4),
-                      Text(f,
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: fg.withValues(alpha: 0.8))),
-                    ],
-                  )),
+              ...files.map((f) => _FileChip(path: f, color: fg)),
             ],
             if (reactions.isNotEmpty) ...[
               const SizedBox(height: 6),
@@ -641,6 +631,70 @@ class _PermissionCardView extends StatelessWidget {
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FileChip extends StatelessWidget {
+  const _FileChip({required this.path, required this.color});
+  final String path;
+  final Color color;
+
+  Future<void> _open(BuildContext context) async {
+    final exists = await File(path).exists() || await Directory(path).exists();
+    if (!exists) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('file not found: $path')),
+        );
+      }
+      return;
+    }
+    final (cmd, args) = switch (Platform.operatingSystem) {
+      'macos' => ('open', [path]),
+      'windows' => ('explorer', [path]),
+      _ => ('xdg-open', [path]),
+    };
+    try {
+      await Process.start(cmd, args, mode: ProcessStartMode.detached);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('open failed: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = path.split(Platform.pathSeparator).last;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: InkWell(
+        onTap: () => _open(context),
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.attach_file,
+                  size: 14, color: color.withValues(alpha: 0.7)),
+              const SizedBox(width: 4),
+              Text(
+                name,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: color.withValues(alpha: 0.9),
+                  decoration: TextDecoration.underline,
+                  decorationColor: color.withValues(alpha: 0.4),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
