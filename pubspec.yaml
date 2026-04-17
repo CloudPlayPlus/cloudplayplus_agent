@@ -1,0 +1,28 @@
+name: cloudplayplus_agent
+description: >-
+  MCP channel bridge for Claude Code. Exposes a local Streamable HTTP MCP server
+  with claude/channel + claude/channel/permission capabilities, letting host
+  apps (e.g. CloudPlayPlus) route user messages, replies, and permission
+  prompts between Claude Code and any transport layer.
+version: 0.0.1
+repository: https://github.com/zhuhaichao518/cloudplayplus_agent
+issue_tracker: https://github.com/zhuhaichao518/cloudplayplus_agent/issues
+
+environment:
+  sdk: ^3.10.0
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  mcp_dart: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+# Declaring an (empty) `flutter:` section is what makes IDEs recognize this
+# as a Flutter package rather than a plain Dart package — even though the
+# library itself uses no Flutter APIs. Consumers can be any Flutter app.
+flutter:

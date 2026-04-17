@@ -1,0 +1,11 @@
+{
+  "name": "cloudplayplus",
+  "description": "CloudPlayPlus channel for Claude Code — bridges CC to a long-running local Flutter app over an MCP HTTP connection, so the Flutter side can push user messages and CC can reply via the `reply` tool.",
+  "version": "0.0.1",
+  "keywords": [
+    "cloudplayplus",
+    "channel",
+    "mcp",
+    "flutter"
+  ]
+}

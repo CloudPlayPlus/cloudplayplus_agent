@@ -1,0 +1,21 @@
+name: cloudplayplus_agent_example
+description: Interactive Flutter demo for cloudplayplus_agent — shows the MCP channel in action with a real chat UI and permission cards.
+publish_to: 'none'
+version: 0.0.1
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cloudplayplus_agent:
+    path: ../
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
