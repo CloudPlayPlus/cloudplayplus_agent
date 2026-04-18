@@ -142,8 +142,8 @@ packages:
     dependency: transitive
     description:
       path: "."
-      ref: a4e5da51578a6d5796323319a0bc96828584e02a
-      resolved-ref: a4e5da51578a6d5796323319a0bc96828584e02a
+      ref: "2c156c9f470a2daca3ae3eac5127567add905d10"
+      resolved-ref: "2c156c9f470a2daca3ae3eac5127567add905d10"
       url: "https://github.com/CloudPlayPlus/mcp_dart.git"
     source: git
     version: "2.1.0"

@@ -26,7 +26,7 @@ dependencies:
   mcp_dart:
     git:
       url: https://github.com/CloudPlayPlus/mcp_dart.git
-      ref: a4e5da51578a6d5796323319a0bc96828584e02a
+      ref: 2c156c9f470a2daca3ae3eac5127567add905d10
 
 dev_dependencies:
   flutter_test:
