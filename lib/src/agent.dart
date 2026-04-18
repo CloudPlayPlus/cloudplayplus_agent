@@ -45,10 +45,13 @@ class CloudplayAgent {
     this.path = '/mcp',
     this.serverName = 'cloudplayplus',
     this.serverVersion = '0.0.1',
+    this.retryInterval = 3000,
+    EventStore? eventStore,
     String? instructions,
     this.onFetchMessages,
     this.onDownloadAttachment,
-  }) : instructions = instructions ?? kChannelInstructions;
+  })  : eventStore = eventStore ?? InMemoryEventStore(),
+        instructions = instructions ?? kChannelInstructions;
 
   /// Bind address. Defaults to loopback — do NOT expose this to LAN/WAN
   /// without also wiring an authenticator. The MCP server has no auth of
@@ -69,6 +72,22 @@ class CloudplayAgent {
   /// `download_attachment`. If null, the tool returns an empty path list
   /// with a note that downloads aren't configured.
   final DownloadAttachmentHandler? onDownloadAttachment;
+
+  /// Milliseconds advertised to the client as the reconnect backoff in
+  /// the SSE `retry:` field of the priming event. Only takes effect with
+  /// protocol version `2025-11-25` or later (the priming event ships with
+  /// an empty `data:` line that older clients cannot parse). Defaults to
+  /// 3 seconds — short enough that laptop-wake reconnects feel immediate
+  /// but not so aggressive that a transient blip hammers the server.
+  final int retryInterval;
+
+  /// Backing store for SSE resumption. Every SSE event emitted on a
+  /// POST response stream is assigned an id and stashed here; clients
+  /// that reconnect with `Last-Event-ID` replay from that point forward.
+  /// Defaults to [InMemoryEventStore] — fine for most deployments since
+  /// channel sessions are short-lived and bounded. Provide your own if
+  /// you need persistence across host restarts.
+  final EventStore eventStore;
 
   final _events = StreamController<AgentEvent>.broadcast();
 
@@ -106,6 +125,8 @@ class CloudplayAgent {
       host: host,
       port: port,
       path: path,
+      retryInterval: retryInterval,
+      eventStore: eventStore,
       onClientConnected: _listeners.add,
       onClientDisconnected: _listeners.remove,
     );
